@@ -33,14 +33,14 @@ public class ClaimsFunction
 
             if (string.IsNullOrEmpty(supabaseProjectRef) || string.IsNullOrEmpty(sqlEndpoint))
             {
-                return await JsonError(req, HttpStatusCode.InternalServerError, "Missing configuration (SupabaseProjectRef or SqlEndpoint)");
+                return await JsonError(req, HttpStatusCode.InternalServerError, "Missing app settings (SupabaseProjectRef or SqlEndpoint)");
             }
 
-            // JWT validation (same as before)
-            if (!req.Headers.TryGetValues("Authorization", out var authHeaders) || 
+            // ---------- JWT validation ----------
+            if (!req.Headers.TryGetValues("Authorization", out var authHeaders) ||
                 !authHeaders.FirstOrDefault()?.StartsWith("Bearer ") ?? true)
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "Missing or invalid Authorization header");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "Missing Authorization header");
             }
 
             var token = authHeaders.First()!["Bearer ".Length..].Trim();
@@ -48,23 +48,23 @@ public class ClaimsFunction
             var user = await ValidateSupabaseJwt(token, supabaseProjectRef);
             if (user == null)
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "Invalid or expired JWT");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "Invalid/expired JWT");
             }
 
             var email = user.FindFirst(ClaimTypes.Email)?.Value ?? user.FindFirst("email")?.Value;
             if (string.IsNullOrEmpty(email))
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "No email in token");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "No email claim in token");
             }
 
             var companyTable = GetCompanyTableName(email);
 
             if (!System.Text.RegularExpressions.Regex.IsMatch(companyTable, "^[a-zA-Z0-9_]+$"))
             {
-                return await JsonError(req, HttpStatusCode.BadRequest, "Invalid company table name");
+                return await JsonError(req, HttpStatusCode.BadRequest, "Invalid table name derived from email");
             }
 
-            // Parse filters, build query, execute SQL (unchanged from previous version)
+            // ---------- Filters ----------
             var filters = await req.ReadFromJsonAsync<Filters>() ?? new Filters();
 
             var sql = $@"
@@ -102,32 +102,80 @@ public class ClaimsFunction
             if (filters.EntryDateFrom != null) parameters.Add("@EntryDateFrom", filters.EntryDateFrom);
             if (filters.EntryDateTo != null) parameters.Add("@EntryDateTo", filters.EntryDateTo);
 
-            var connString = $"Server=tcp:{sqlEndpoint},1433;Database={lakehouseName};Encrypt=True;TrustServerCertificate=False;Authentication=Active Directory Managed Identity;";
+            var connString = $"Server=tcp:{sqlEndpoint},1433;Database={lakehouseName};Encrypt=True;Authentication=Active Directory Managed Identity;";
 
             await using var conn = new SqlConnection(connString);
+            await conn.OpenAsync();
+
             var rows = await conn.QueryAsync(sql, parameters);
 
-            var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(new { rows = rows.ToList(), totalCount = rows.Count() });
-            return response;
+            var okResponse = req.CreateResponse(HttpStatusCode.OK);
+            await okResponse.WriteAsJsonAsync(new { rows = rows.ToList(), totalCount = rows.Count() });
+            return okResponse;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
+            _logger.LogError(ex, "Unhandled error");
             return await JsonError(req, HttpStatusCode.InternalServerError, ex.Message);
         }
     }
 
     private async Task<HttpResponseData> JsonError(HttpRequestData req, HttpStatusCode status, string message)
     {
-        var errorResponse = req.CreateResponse(status);
-        await errorResponse.WriteAsJsonAsync(new { error = message });
-        return errorResponse;
+        var resp = req.CreateResponse(status);
+        await resp.WriteAsJsonAsync(new { error = message });
+        return resp;
     }
 
-    // GetCompanyTableName and ValidateSupabaseJwt stay exactly the same as previous version
-    private static string GetCompanyTableName(string email) { … } // unchanged
-    private static async Task<ClaimsPrincipal?> ValidateSupabaseJwt(...) { … } // unchanged
+    private static string GetCompanyTableName(string email)
+    {
+        var parts = email.Split('@');
+        if (parts.Length != 2) throw new Exception("Invalid email");
+        var domain = parts[1].ToLowerInvariant();
+
+        if (domain.EndsWith(".gmail.com") || domain == "gmail.com") return "gmail";
+
+        var companyPart = domain.Split('.')[0];
+        return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(companyPart);
+    }
+
+    private static readonly HttpClient HttpClient = new();
+
+    private static OpenIdConnectConfiguration? config = null;
+
+    private static async Task<ClaimsPrincipal?> ValidateSupabaseJwt(string token, string projectRef)
+    {
+        var authority = $"https://{projectRef}.supabase.co/auth/v1";
+
+        config ??= await new OpenIdConnectConfigurationRetriever()
+            .GetAsync($"{authority}/.well-known/openid-configuration", CancellationToken.None);
+
+        var validationParameters = new TokenValidationParameters
+        {
+            ValidIssuer = authority,
+            ValidateAudience = false,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = config.SigningKeys,
+            ValidateLifetime = true
+        };
+
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            return handler.ValidateToken(token, validationParameters, out _);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
 
-record Filters( … ); // unchanged
+public record Filters(
+    string? InsuredName = null,
+    string? State = null,
+    string? ClaimId = null,
+    DateTime? LossDateFrom = null,
+    DateTime? LossDateTo = null,
+    DateTime? EntryDateFrom = null,
+    DateTime? EntryDateTo = null);
