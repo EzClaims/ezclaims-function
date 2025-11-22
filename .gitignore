@@ -1,7 +1,0 @@
-bin/
-obj/
-output/
-*.user
-*.suo
-*.vspsess
-*.vscode/
