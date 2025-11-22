@@ -150,8 +150,7 @@ public class ClaimsFunction
     {
         var authority = $"https://{projectRef}.supabase.co/auth/v1";
 
-        config ??= await new OpenIdConnectConfigurationRetriever()
-            .GetAsync($"{authority}/.well-known/openid-configuration", CancellationToken.None);
+        config ??= await OpenIdConnectConfigurationRetriever.GetAsync($"{authority}/.well-known/openid-configuration", CancellationToken.None);
 
         var validationParameters = new TokenValidationParameters
         {
