@@ -10,6 +10,9 @@ using Microsoft.IdentityModel.Tokens;
 using System.Globalization;
 using System.Net;
 using System.Security.Claims;
+using System.Linq;
+
+using FunctionsHttp = Microsoft.Azure.Functions.Worker.Http; // <-- this fixes the ambiguous reference
 
 public class ClaimsFunction
 {
@@ -21,7 +24,7 @@ public class ClaimsFunction
     }
 
     [Function("GetClaims")]
-    public async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "claims")] HttpRequestData req)
+    public async Task<FunctionsHttp.HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "claims")] FunctionsHttp.HttpRequestData req)
     {
         try
         {
@@ -37,31 +40,32 @@ public class ClaimsFunction
             }
 
             // ---------- JWT validation ----------
-            if (!req.Headers.TryGetValues("Authorization", out var authHeaders) ||
-                !authHeaders.FirstOrDefault()?.StartsWith("Bearer ") ?? true)
+            if (!req.Headers.TryGetValues("Authorization", out var authValues) ||
+                authValues.FirstOrDefault() is not { } authHeader ||
+                !authHeader.StartsWith("Bearer "))
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "Missing Authorization header");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "Missing or invalid Authorization header");
             }
 
-            var token = authHeaders.First()!["Bearer ".Length..].Trim();
+            var token = authHeader["Bearer ".Length..].Trim();
 
             var user = await ValidateSupabaseJwt(token, supabaseProjectRef);
             if (user == null)
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "Invalid/expired JWT");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "Invalid or expired JWT");
             }
 
             var email = user.FindFirst(ClaimTypes.Email)?.Value ?? user.FindFirst("email")?.Value;
             if (string.IsNullOrEmpty(email))
             {
-                return await JsonError(req, HttpStatusCode.Unauthorized, "No email claim in token");
+                return await JsonError(req, HttpStatusCode.Unauthorized, "No email in JWT");
             }
 
             var companyTable = GetCompanyTableName(email);
 
             if (!System.Text.RegularExpressions.Regex.IsMatch(companyTable, "^[a-zA-Z0-9_]+$"))
             {
-                return await JsonError(req, HttpStatusCode.BadRequest, "Invalid table name derived from email");
+                return await JsonError(req, HttpStatusCode.BadRequest, "Invalid company table name");
             }
 
             // ---------- Filters ----------
@@ -105,8 +109,6 @@ public class ClaimsFunction
             var connString = $"Server=tcp:{sqlEndpoint},1433;Database={lakehouseName};Encrypt=True;Authentication=Active Directory Managed Identity;";
 
             await using var conn = new SqlConnection(connString);
-            await conn.OpenAsync();
-
             var rows = await conn.QueryAsync(sql, parameters);
 
             var okResponse = req.CreateResponse(HttpStatusCode.OK);
@@ -120,7 +122,7 @@ public class ClaimsFunction
         }
     }
 
-    private async Task<HttpResponseData> JsonError(HttpRequestData req, HttpStatusCode status, string message)
+    private async Task<FunctionsHttp.HttpResponseData> JsonError(FunctionsHttp.HttpRequestData req, HttpStatusCode status, string message)
     {
         var resp = req.CreateResponse(status);
         await resp.WriteAsJsonAsync(new { error = message });
@@ -130,10 +132,11 @@ public class ClaimsFunction
     private static string GetCompanyTableName(string email)
     {
         var parts = email.Split('@');
-        if (parts.Length != 2) throw new Exception("Invalid email");
+        if (parts.Length != 2) return "invalid";
+
         var domain = parts[1].ToLowerInvariant();
 
-        if (domain.EndsWith(".gmail.com") || domain == "gmail.com") return "gmail";
+        if (domain == "gmail.com" || domain.EndsWith(".gmail.com")) return "gmail";
 
         var companyPart = domain.Split('.')[0];
         return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(companyPart);
