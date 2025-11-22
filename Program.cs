@@ -22,7 +22,7 @@ async Task<IResult> GetClaims(HttpRequest req, ILogger log)
     // ╔══════════════════════════════════════════════
     // ║               FILL THESE 3 VALUES           ║
     // ╚══════════════════════════════════════════════
-    const string SupabaseProjectRef = "abcde12345"; // ← your xxxx in https://xxxx.supabase.co
+    const string SupabaseProjectRef = "naiofpvmuxehnibklytc"; // ← your xxxx in https://xxxx.supabase.co
     const string SqlEndpoint = "fhekn6q6glhuxc4ebtovcwe52a-736quyv6lnlujkownwfnn7yvdq.datawarehouse.fabric.microsoft.com"; // ← from Fabric Lakehouse → SQL endpoint
     const string LakehouseName = "Claimsify_LH";
 
